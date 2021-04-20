@@ -372,13 +372,32 @@ diabantepenult23 <-
 
 # Step 24
 
+>where N is the estimated total number of cases, n1 is the marginal total of Commonwealth registrants, n2 is the marginal total of State registrants and n12 is the number of individuals registered in both Commonwealth and State data sets. Here, N = 11,631 compared with the observed total count of 10,675, suggesting an ascertainment fraction of 92%.
+
 ```{r}
 diabantepenult23 %>%
   filter(morbseq==1) %>%
   count(cth, state)
 
-# big_n <- 
-  
+n1 <- diabantepenult23 %>% filter(morbseq==1 & cth) %>% nrow
+n2 <- diabantepenult23 %>% filter(morbseq==1 & state) %>% nrow
+n12 <- diabantepenult23 %>% filter(morbseq==1 & state & cth) %>% nrow
+
+big_n <- (n1 + 1) * (n2 + 1) / (n12 + 1)
+actual_n <- diabantepenult23 %>% filter(morbseq==1) %>% nrow
+
+ascertainemnt_fraction = actual_n / big_n
+
+ci_hi <- big_n + qnorm(0.975) * sqrt( (n1 + 1) * (n2 + 1) * (n1 - n12) * (n2 - n12) / ((n12 + 1)^2) / (n12 + 2))
+ci_lo <- big_n + qnorm(0.025) * sqrt( (n1 + 1) * (n2 + 1) * (n1 - n12) * (n2 - n12) / ((n12 + 1)^2) / (n12 + 2))
+
+
+diabantepenult23 %>%
+  filter(morbseq==1) %>%
+  count(dth, hmds, pbs, mbs)
+
+f1 <- flextable::flextable(as.data.frame(xtabs(~ cth + state, data=diabantepenult23 %>% filter(morbseq==1))))
+f2 <- flextable::flextable(as.data.frame(xtabs(~ mbs + pbs + hmds + dth, data=diabantepenult23 %>% filter(morbseq==1))))
 ```
 
 

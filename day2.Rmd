@@ -27,10 +27,12 @@ library(lubridate)
 load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/PBSdata2.RData")
 load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/Dthdata2.RData")
 load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/diabetes.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/MBSdata2.RData")
 
 PBSdata2 <- as_tibble(PBSdata2)
 Dthdata2 <- as_tibble(Dthdata2)
 diabetes <- as_tibble(diabetes)
+MBSdata2 <- as_tibble(MBSdata2)
 ```
 
 
@@ -39,21 +41,21 @@ diabetes <- as_tibble(diabetes)
 >GP visits: 1 thru 51, 160 thru 164, 170 thru 173, 193 thru 199, 601 thru 602, 700 thru 712, 720 thru 779, 900 thru 903, 2501 thru 2509, 2517 thru 2526, 2546 thru 2559, 2574 thru 2578, 2721 thru 2727, 5000 thru 5267
 
 ```{r}
-codes_mbs <- c(
+codes_mbs_gp_visit <- c(
   1:51,
   160:164,
   170:173,
   193:199,
   601:602,
   700:712,
-  720:799,
+  720:779,
   900:903,
   2501:2509,
   2517:2526,
   2546:2559,
   2574:2578,
   2721:2727,
-  500:5267
+  5000:5267
 )
 ```
 
@@ -136,5 +138,194 @@ diabetes4 %>%
     stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
     stgpt1 = totpt - stgpt2 - stgpt3
   ) %>%
-  slice(184:193)
+  slice(184:195)
+
+diabetes4 %>%
+  mutate(
+    totpt = as.integer(exit - date, units="days") + 1,
+    stgpt3 = if_else(condition = !is.na(stage3), true = as.integer(exit - stage3, units="days") + 1, false = 0),
+    stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
+    stgpt1 = totpt - stgpt2 - stgpt3
+  ) %>%
+  filter(stgpt1<0 | stgpt2<0 | stgpt3<0)
+
+diabetes4 %>%
+  mutate(
+    totpt = as.integer(exit - date, units="days") + 1,
+    stgpt3 = if_else(condition = !is.na(stage3), true = as.integer(exit - stage3, units="days") + 1, false = 0),
+    stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
+    stgpt1 = totpt - stgpt2 - stgpt3
+  ) %>%
+  filter(stgpt1<0 | stgpt2<0 | stgpt3<0) %>%
+  nrow
 ```
+
+# Step 9
+
+```{r}
+diabetes5 <-
+  diabetes4 %>%
+  mutate(
+    totpt = as.integer(exit - date, units="days") + 1,
+    stgpt3 = if_else(condition = !is.na(stage3), true = as.integer(exit - stage3, units="days") + 1, false = 0),
+    stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
+    stgpt1 = totpt - stgpt2 - stgpt3
+  ) %>%
+  mutate(
+    dead = if_else(condition = (stgpt1<0 | stgpt2<0 | stgpt3<0), true = 0, false = dead),
+    exit = if_else(condition = (stgpt1<0 | stgpt2<0 | stgpt3<0), true = ymd("1999-12-31"), false = exit)
+  ) %>%
+  mutate(
+    totpt = as.integer(exit - date, units="days") + 1,
+    stgpt3 = if_else(condition = !is.na(stage3), true = as.integer(exit - stage3, units="days") + 1, false = 0),
+    stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
+    stgpt1 = totpt - stgpt2 - stgpt3
+  )
+```
+
+# Step 10
+
+```{r}
+diabetes5 %>%
+  select(stgpt1,stgpt2,stgpt3, totpt) %>%
+  pivot_longer(cols = everything()) %>%
+  group_by(name) %>%
+  summarise(
+    n = n(),
+    mean = mean(value),
+    min = min(value),
+    max = max(value),
+    sum = sum(value)
+  )
+```
+
+# Step 11
+
+> Your next objective is to enumerate the prevalent cases of diabetes in each of the three stages on 30 June 1994 and 30 June 1999.
+
+```{r}
+date94 <- ymd("1994-06-30")
+date99 <- ymd("1999-06-30")
+
+diabetes5 %>%
+  mutate(
+    prev94 = case_when(
+      date > date94 | exit < date94 ~ 0,  # not prevalent - the opposite of this is that exit date is before or same as date94
+      !is.na(stage3) & stage3 <= date94 ~ 3, # stage 3 prevalent
+      !is.na(stage2) & stage2 <= date94 ~ 2, # stage 2 prevalent
+      TRUE ~ 1  # stage 1 prevalent
+    )
+  ) %>%
+  count(prev94)
+
+diabetes5 %>%
+  mutate(
+    prev99 = case_when(
+      date > date99 | exit < date99 ~ 0,  # not prevalent - the opposite of this is that exit date is before or same as date99
+      !is.na(stage3) & stage3 <= date99 ~ 3, # stage 3 prevalent
+      !is.na(stage2) & stage2 <= date99 ~ 2, # stage 2 prevalent
+      TRUE ~ 1  # stage 1 prevalent
+    )
+  ) %>%
+  count(prev99)
+  
+```
+
+
+# Step 12
+
+```{r}
+MBSdata2 %>%
+  mutate(gpvisit = mbsitem %in% codes_mbs_gp_visit) %>%
+  count(gpvisit)
+```
+
+
+# Step 13
+
+```{r}
+MBSdata3 <-
+  MBSdata2 %>%
+  mutate(gpvisit = mbsitem %in% codes_mbs_gp_visit) %>%
+  left_join(diabetes5 %>% select(rootlpno, date, stage2, stage3, exit))
+```
+
+
+# Step 14
+
+```{r}
+MBSdata4 <-
+  MBSdata3 %>%
+  mutate(
+    stgpvis = case_when(
+      gpvisit == 1 & (date > servdate | exit < servdate) ~ 0L,  # not diabetic at visit
+      gpvisit == 1 & !is.na(stage3) & stage3 <= servdate ~ 3L, # stage 3 at visit
+      gpvisit == 1 & !is.na(stage2) & stage2 <= servdate ~ 2L, # stage 2 at visit
+      gpvisit == 1 & !is.na(date) & date <= servdate ~ 1L,  # stage 1 prevalent
+      TRUE ~ NA_integer_
+      )
+    )
+
+MBSdata4 %>%
+  count(
+    stgpvis
+  )
+```
+
+
+# Step 15
+
+```{r}
+MBSgpst <-
+  MBSdata4 %>%
+  group_by(rootlpno) %>%
+  summarise(
+    gpvisit1 = sum(stgpvis==1, na.rm = TRUE),
+    gpvisit2 = sum(stgpvis==2, na.rm = TRUE),
+    gpvisit3 = sum(stgpvis==3, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  select(rootlpno, gpvisit1, gpvisit2, gpvisit3)
+```
+
+# Step 16
+
+```{r}
+diabetes5 %>%
+  left_join(MBSgpst) %>%
+  filter(is.na(gpvisit1)|is.na(gpvisit2)|is.na(gpvisit3)) %>%
+  nrow()
+
+diabetes6 <-
+  diabetes5 %>%
+  left_join(MBSgpst) %>%
+  mutate(across(.cols = matches("gpvisit"), .fns = ~replace_na(.x, replace=0)))
+
+diabetes6 %>%
+  slice(21:35)
+```
+
+
+# Step 17
+
+```{r}
+diabetes6 %>%
+  pivot_longer(cols = matches("gpvisit")) %>%
+  group_by(name) %>%
+  summarise(
+    n = n(),
+    min = min(value),
+    max = max(value),
+    mean = mean(value),
+    sum = sum(value)
+  )
+
+results <-
+  diabetes6 %>%
+  summarise(
+    utlisation1 = sum(gpvisit1) / sum(stgpt1/365.25),  # divide by number of years
+    utlisation2 = sum(gpvisit2) / sum(stgpt2/365.25),
+    utlisation3 = sum(gpvisit3) / sum(stgpt3/365.25)
+  )
+```
+
