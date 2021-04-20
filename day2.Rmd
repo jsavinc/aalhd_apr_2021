@@ -1,0 +1,140 @@
+---
+title: "Day 2"
+author: "Jan Savinc"
+date: "20/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(lubridate)
+# library(data.table)
+```
+
+# Load data
+
+```{r}
+# load(file = "../AALHD_2021/R Syntax and Data/R Data/MBSdata.RData")
+# load(file = "./data2_files_day1.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/PBSdata2.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/Dthdata2.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/diabetes.RData")
+
+PBSdata2 <- as_tibble(PBSdata2)
+Dthdata2 <- as_tibble(Dthdata2)
+diabetes <- as_tibble(diabetes)
+```
+
+
+# Define inclusion codes
+
+>GP visits: 1 thru 51, 160 thru 164, 170 thru 173, 193 thru 199, 601 thru 602, 700 thru 712, 720 thru 779, 900 thru 903, 2501 thru 2509, 2517 thru 2526, 2546 thru 2559, 2574 thru 2578, 2721 thru 2727, 5000 thru 5267
+
+```{r}
+codes_mbs <- c(
+  1:51,
+  160:164,
+  170:173,
+  193:199,
+  601:602,
+  700:712,
+  720:799,
+  900:903,
+  2501:2509,
+  2517:2526,
+  2546:2559,
+  2574:2578,
+  2721:2727,
+  500:5267
+)
+```
+
+# Step 1 & 2
+
+```{r}
+PBSdata2 %>% count(diabmed)
+
+PBSdata3 <-
+  PBSdata2 %>%
+  group_by(rootlpno) %>%
+  mutate(
+    # ohgaseq = if_else(condition = diabmed == 1, true = cumsum(diabmed==1), false = 0L),
+    # inspseq = if_else(condition = diabmed == 2, true = cumsum(diabmed==1), false = 0L)
+    ohgaseq = cumsum(diabmed==1),  # this ensure that it's only 0 prior to the first entry
+    inspseq = cumsum(diabmed==2)
+  ) %>%
+  ungroup
+```
+
+# Step 3
+
+```{r}
+PBSohga <-
+  PBSdata3 %>%
+  filter(ohgaseq==1 & inspseq==0 & !is.na(dispseq))  # this ensuresonly records where oral hypgl. dispensed before insulin, and only the first record
+```
+
+# Step 4
+
+```{r}
+diabetes2 <-
+  diabetes %>%
+  left_join(PBSohga %>% select(rootlpno, stage2 = dispdate))
+```
+
+# Step 5
+
+```{r}
+PBSinsp <-
+  PBSdata3 %>%
+  filter(inspseq==1 & !is.na(dispseq)) %>%  # this captures insulin dispensing, including where it came after oral hyopgl.
+  group_by(rootlpno) %>%
+  slice_min(order_by = dispseq, n=1) %>%  # take the earliest dispseq entry
+  ungroup
+```
+
+# Step 6
+
+```{r}
+diabetes3 <-
+  diabetes2 %>%
+  left_join(
+    PBSinsp %>% select(rootlpno, stage3 = dispdate)
+  )
+```
+
+# Step 7
+
+```{r}
+diabetes4 <-
+  diabetes3 %>%
+  left_join(
+    Dthdata2 %>% select(rootlpno, exit = dthdate) %>% mutate(dead = 1)  # create dead variable for people with death records
+  ) %>%
+  mutate(
+    dead = replace_na(dead, replace=0),  # set dead to 0 for people with no death record
+    exit = replace_na(exit, replace=ymd("1999-12-31"))  # set exit date to censoring date for people with no death record
+  )
+```
+
+# Step 8
+
+```{r}
+# diabetes5 <-
+diabetes4 %>%
+  mutate(
+    totpt = as.integer(exit - date, units="days") + 1,
+    stgpt3 = if_else(condition = !is.na(stage3), true = as.integer(exit - stage3, units="days") + 1, false = 0),
+    stgpt2 = if_else(condition = !is.na(stage2), true = as.integer(exit - stage2, units="days") + 1 - stgpt3, false = 0),
+    stgpt1 = totpt - stgpt2 - stgpt3
+  ) %>%
+  slice(184:193)
+```

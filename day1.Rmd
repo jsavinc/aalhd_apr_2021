@@ -1,0 +1,391 @@
+---
+title: "Day 1"
+author: "Jan Savinc"
+date: "19/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+# Load data
+
+```{r}
+load(file = "../AALHD_2021/R Syntax and Data/R Data/MBSdata.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/PBSdata.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/HMDSdata.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/Dthdata.RData")
+
+# dispensing <- read_csv(file = "../AALHD_2021/R Syntax and Data/R Data/PBSdata.RData")
+```
+
+
+# Define inclusion codes
+
+```{r}
+codes_mbs <- c(66551, 66554, 66557, 73815, 73840, 66319, 66322)
+
+codes_oral_hypoglycaemics <- c(1202, 1801, 2178, 2430, 2440, 2449, 2607, 2720, 2939, 2940, 8188, 8189, 8391, 8392, 8450, 8451, 8452, 8533, 8535, 8607, 8687, 8688, 8689, 8690, 8691, 8692, 8693, 8694, 8695, 8696, 8810, 8811)
+
+codes_insulin <- c(1425, 1426, 1429, 1430, 1431, 1461, 1462, 1531, 1532, 1533, 1534, 1535, 1537, 1591, 1592, 1710, 1711, 1713, 1715, 1716, 1718, 1721, 1722, 1761, 1762, 1763, 2061, 2062, 8006, 8084, 8085, 8212, 8390, 8435, 8571, 8609)
+
+
+## ICD codes have been modified for regex use
+codes_diabetes_mellitus_icd9 <- c("^250\\.", "V77\\.1")
+codes_diabetes_mellitus_icd10 <- paste0("^E", 10:14, "\\.")
+
+codes_deaths_diabetes_mellitus_icd9 <- c("^250", "^V771")
+codes_deaths_diabetes_mellitus_icd10 <- paste0("^E", 10:14)
+```
+
+
+# Coding individual datasets
+
+## Steps 1-3, 5-7, 9-11, 13-15
+
+```{r}
+tag_records <- function(data_tbl, codes_var, target_var, inclusion_codes) {
+  codes_var <- enquo(codes_var)
+  target_var <- enquo(target_var)
+  data_tbl %>%
+  mutate(!!target_var := !!codes_var %in% inclusion_codes)
+}
+
+tag_records_regex <- function(data_tbl, codes_var, target_var, inclusion_codes) {
+  codes_var <- enquo(codes_var)
+  target_var <- enquo(target_var)
+  inclusion_codes = paste(inclusion_codes, collapse = "|")
+  data_tbl %>%
+  mutate(!!target_var := str_detect(string = !!codes_var, pattern = inclusion_codes))
+}
+
+# regex_hmds <- paste(c(codes_diabetes_mellitus_icd9,codes_diabetes_mellitus_icd10), collapse = "|")
+
+tag_wide_records_regex <- function(data_tbl, cols_regex, target_var, inclusion_codes) {
+  target_var <- enquo(target_var)
+  inclusion_codes <- paste(inclusion_codes, collapse = "|")  # make a single regex out of multiple codes
+  data_tbl %>%
+    rowwise() %>%
+    mutate(!!target_var := any(grepl(x = c_across(cols = matches(cols_regex)), pattern = inclusion_codes))) %>%
+    ungroup
+}
+
+HMDSdata %>%
+  rowwise() %>%
+  mutate(diabetes = any(grepl(x = c_across(cols = matches("^diag")), pattern = regex_hmds)))
+  ungroup
+
+sort_by_id_and_date <- function(data_tbl, date_var) {
+  date_var <- enquo(date_var)
+  data_tbl %>%
+    arrange(rootlpno, !!date_var)
+}
+
+add_file_index <- function(data_tbl) {
+  data_tbl %>%
+    mutate(fileseq = 1:n())
+}
+
+add_morb_index <- function(data_tbl) {
+  data_tbl %>%
+    group_by(rootlpno) %>%
+    mutate(morbseq = 1:n()) %>%
+    ungroup
+}
+
+add_service_index <- function(data_tbl, target_var) {
+  target_var <- enquo(target_var)
+  data_tbl %>%
+    group_by(rootlpno) %>%
+    mutate(servseq = if_else(condition = !!target_var, true = cumsum(!!target_var), false = NA_integer_)) %>%  # index of target record, within-id
+    ungroup
+}
+
+MBSdata2 <-
+  MBSdata %>%
+  as_tibble() %>%
+  # sort_by_id_and_date(date_var = servdate) %>%
+  tag_records(data_tbl = ., codes_var = mbsitem, target_var = glyhb, inclusion_codes = codes_mbs) %>%
+  add_file_index() %>%
+  add_morb_index() %>%
+  add_service_index(target_var = glyhb)
+
+PBSdata2 <-
+  PBSdata %>%
+  as_tibble() %>%
+  # sort_by_id_and_date(date_var = dispdate) %>%
+  tag_records(data_tbl = ., codes_var = pbsitem, target_var = diabmed, inclusion_codes = c(codes_oral_hypoglycaemics, codes_insulin)) %>%
+  add_file_index() %>%
+  add_morb_index() %>%
+  add_service_index(target_var = diabmed)
+
+HMDSdata2 <-
+  HMDSdata %>%
+  as_tibble() %>%
+  # sort_by_id_and_date(date_var = sepdate) %>%
+  tag_wide_records_regex(data_tbl = ., cols_regex = "^diag", target_var = diabetes, inclusion_codes = c(codes_diabetes_mellitus_icd9, codes_diabetes_mellitus_icd10)) %>%
+  add_file_index() %>%
+  add_morb_index() %>%
+  add_service_index(target_var = diabetes)
+
+## alrady a "type 1" file, one record per individual
+Dthdata2 <-
+  Dthdata %>%
+  as_tibble() %>%
+  tag_records_regex(data_tbl = ., codes_var = codcode, target_var = diabetes, inclusion_codes = c(codes_deaths_diabetes_mellitus_icd9, codes_deaths_diabetes_mellitus_icd10))
+
+## save for later use
+save(list = c("MBSdata2", "PBSdata2", "HMDSdata2", "Dthdata2"), file = "./data2_files_day1.RData")
+```
+
+## Checks: steps 4, 8, 12, 16
+
+```{r}
+stopifnot(MBSdata2 %>% filter(glyhb) %>% nrow == 29571)
+stopifnot(MBSdata2 %>% filter(servseq==1) %>% nrow == 7239)
+
+stopifnot(PBSdata2 %>% filter(diabmed) %>% nrow == 174131)
+stopifnot(PBSdata2 %>% filter(servseq==1) %>% nrow == 6820)
+
+stopifnot(HMDSdata2 %>% filter(diabetes) %>% nrow == 21274)
+stopifnot(HMDSdata2 %>% filter(servseq==1) %>% nrow == 5328)
+
+stopifnot(Dthdata2 %>% filter(diabetes) %>% nrow == 965)
+```
+
+
+# Steps 4,8,12,16: "Cutting down"
+
+```{r}
+MBScutdown <-
+  MBSdata2 %>%
+  filter(glyhb) %>%
+  rename(date = servdate, sequence = servseq) %>%
+  mutate(type=1) %>%
+  select(rootlpno, date, age, sex, sequence, type)
+
+PBScutdown <-
+  PBSdata2 %>%
+  filter(diabmed) %>%
+  rename(date = dispdate, sequence = servseq) %>%
+  mutate(type = 2) %>%
+  select(rootlpno, date, age, sex, sequence, type)
+
+HMDScutdown <-
+  HMDSdata2 %>%
+  filter(diabetes) %>%
+  rename(date = sepdate, sequence = servseq) %>%
+  mutate(type = 3)  %>%
+  select(rootlpno, date, age, sex, sequence, type)
+
+Dthcutdown <-
+  Dthdata2 %>%
+  filter(diabetes) %>%
+  rename(date = dthdate) %>%
+  mutate(type = 4) %>%
+  mutate(sequence = 1) %>%  # set sequence to 1 for every death record
+  select(rootlpno, date, age, sex, sequence, type)
+```
+
+
+# Step 17: Vertical merge
+
+```{r}
+diabantepenult <-
+  bind_rows(
+    MBScutdown,
+    PBScutdown,
+    HMDScutdown,
+    Dthcutdown
+  ) %>%
+  add_file_index() %>%
+  sort_by_id_and_date(date_var = date) %>%
+  add_morb_index()
+
+stopifnot(nrow(diabantepenult)==225941)
+```
+
+# Step 18: "Cut down further" to only those with sequence = 1 (or missing in death files)
+
+```{r}
+diabpenult <-
+  diabantepenult %>%
+  filter(sequence == 1) %>%
+  select(-sequence) %>%
+  add_file_index() %>%
+  sort_by_id_and_date(date_var = date) %>%  # problem! this changes the results because the
+  add_morb_index()
+
+stopifnot(nrow(diabpenult)==20352)
+```
+
+
+# Step 19: First occurence / incidence record of diabetes
+
+```{r}
+# platform <-
+#   diabpenult %>%
+#   group_by(rootlpno) %>%
+#   slice_min(order_by = date, n = 1) %>%
+#   ungroup %>%
+#   select(-morbseq) %>%
+#   add_file_index()
+
+platform <- 
+  diabpenult %>%
+  filter(morbseq==1) %>%
+  select(-morbseq) %>%
+  add_file_index()
+
+# platform %>% group_by(rootlpno, type) %>% filter(n()>1)
+platform %>% count(type)
+
+
+stopifnot(nrow(platform)==10675)
+stopifnot(platform %>% filter(type == 1) %>% nrow == 5020)
+stopifnot(platform %>% filter(type == 2) %>% nrow == 3200)
+stopifnot(platform %>% filter(type == 3) %>% nrow == 2425)
+stopifnot(platform %>% filter(type == 4) %>% nrow == 30)
+```
+
+
+# Step 20: 
+
+```{r}
+diabantepenult %>%
+  mutate(yearinc = lubridate::year(date)) %>%
+  filter(morbseq == 1) %>%
+  count(yearinc) %>%
+  print(n=nrow(.))
+
+diabantepenult %>%
+  mutate(yearinc = lubridate::year(date)) %>%
+  filter(morbseq == 1) %>%
+  ggplot(data = ., aes(x=yearinc)) +
+  geom_bar() +
+  theme_minimal()
+```
+
+# Step 21:
+
+```{r}
+library(survival)
+
+diabantepenult2 <-
+  diabantepenult %>%
+  mutate(
+    yearinc = lubridate::year(date),
+    # previous = as.integer(morbseq < lead(morbseq, n = 1, default = FALSE))
+    previous = as.integer(morbseq > 1),
+    revsurti = if_else(
+      condition = previous==0,
+      true = as.integer(date - lubridate::ymd("1989-12-31"), units = "days"),
+      false = as.integer(date - lag(date, n=1), units = "days")
+      )
+    )
+
+survival_step_21 <- survfit(Surv(ceiling(revsurti/90), previous) ~ 1,
+conf.type = 'none', data = diabantepenult2)
+
+plot(survival_step_21, xscale = 1/90)
+
+summary(survival_step_21)
+# survival_step_21$cumhaz
+```
+
+## Life table
+
+> Examine the life table and note where the hazard rate (slope of the curve) hits zero, which is at 2,160 days (make sure your hazard rates are displayed to 4-5 decimal places, otherwise a zero hazard rate may appear to occur earlier). At this point the survival is only 0.040 (4%). This means that in the absence of any documented history of whether or not an earlier event occurred, there is only a 4% chance that an apparent first-time event is genuine. Compare this to a documented event-free history of just 90 days, where there is a 21% chance that an apparent first-time event is genuine.
+
+```{r}
+
+# install.packages("discSurv")
+library(discSurv)  # for lifeTable()  - which doesn't seem to work
+library(MortalityTables)  # also for lifeTable()
+
+discsurv_lifetable <-
+  diabantepenult %>%
+  mutate(
+    timecol = as.numeric(revsurti) + 1,
+    censcol = as.numeric(previous)
+  ) %>%
+  as.data.frame() %>%
+  discSurv::lifeTable(dataSet = ., timeColumn = "timecol", censColumn = "censcol")
+
+## how do we get to the 4-5 digit 0 rounding?!
+discsurv_lifetable$Output %>% filter(hazard < 0.00005)
+
+# MortalityTables::lifeTable()
+```
+
+# Step 22
+
+```{r}
+diabantepenult3 <-
+  diabantepenult2 %>%
+  mutate(
+    cx = if_else(
+      condition = revsurti >= 2160,
+      true = 1,
+      false = 0.04 / (1.017 * (revsurti^-0.438))
+    )
+  )
+
+diabantepenult3 %>%  # check corrected backcasting figures
+  filter(morbseq==1) %>%
+  group_by(yearinc) %>%
+  summarise(
+    uncorrected = n(),
+    corrected = sum(cx)
+  )
+```
+
+# Step 23
+
+```{r}
+diabantepenult23 <-
+  diabantepenult3 %>% 
+  arrange(desc(fileseq)) %>%
+  group_by(rootlpno) %>%  # each individual gets tagged by whether they had records in any of the 4 sources
+  mutate(
+    mbs = any(type == 1),
+    pbs = any(type == 2),
+    hmds = any(type == 3),
+    dth = any(type == 4),
+    cth = any(type %in% c(1,2)),
+    state = any(type %in% c(3,4))
+  ) %>%
+  ungroup %>%
+  arrange(fileseq)
+```
+
+
+# Step 24
+
+```{r}
+diabantepenult23 %>%
+  filter(morbseq==1) %>%
+  count(cth, state)
+
+# big_n <- 
+  
+```
+
+
+
+# Save results
+
+```{r}
+save.image(file = "./day1.RData")
+```
+
