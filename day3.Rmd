@@ -1,0 +1,331 @@
+---
+title: "Day 3"
+author: "Jan Savinc"
+date: "21/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tictoc)
+library(survival)
+library(survminer)  # for ggplot plots of survival
+```
+
+# Load data
+
+```{r}
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/diabetes6.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/HMDSdata2.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/diabcomp.RData")
+
+## convert data frames to tibbles for easier looking up while coding
+diabetes6 <- as_tibble(diabetes6)
+HMDSdata2 <- as_tibble(HMDSdata2)
+diabcomp <- as_tibble(diabcomp)
+```
+
+
+# Define inclusion codes
+
+```{r}
+codes_diabetes_complications_icd9 <- c(
+  "112.1", "354.X", "355.X", "356.8", "362.34", "365.X", "366.X", "369.X",
+  paste0(401:405, ".X"),
+  paste0(410:414, ".X"),
+  "428.X", "429.2", "429.3", "429.9", 
+  paste0(430:438, ".X"),
+  "440.X", "443.X", "444.X", "447.1", "459.8", "459.9", 
+  paste0(580:586, ".X"),
+  "590.X", "595.X", 
+  "599.0", 
+  "681.X", "682.X", "707.X", "729.2", "730.17", "784.3X", "785.4", "791.0", 
+  "V45.1", "V56.X"  # these are also valid icd-10 codes actually!
+)
+
+codes_diabetes_complications_icd10 <- c(
+  "H34.0", "H40.X", "H42.8", "H54.X", 
+  paste0("I",20:22,".X"),
+  "I24.X", "I25.X", "I50.0", "I50.1", "I50.9", "I51.6", "I51.7", "I51.8", "I51.9", 
+  paste0("I",20:22,".X"),
+  paste0("I",60:67,".X"),
+  "I69.X", "I70.X", "I73.X", "I74.X", "I77.1", "I87.2", "I99.X", "L03.X", "L89.X", "L97.X", "L98.4", "M54.10", "M54.11", "M54.19", "M79.2", "M86.37", "M86.47", "M87.57", "M87.67", "M87.87", "N00.X", "N01.X", 
+  paste0("N0",3:5,".X"),
+  "N07.X", "N08.X", "N10.X", 
+  paste0("N",format((118:129)/10, nsmall = 1)),
+  "N15.1", "N15.9", 
+  paste0("N",16:18,".X"),
+  "N28.8", "N30.X", "N39.0", "N77.1", "R47.0", "R02.X", "R80.X", "Z49.X", "Z99.2"
+)
+
+codes_diabetes_procedures_icd9 <- c("84.1", "84.3")
+codes_diabetes_procedures_icd10 <- c(
+  "44338-00", "44358-00", "44361-00", "44361-01", "44364-00", "44364-01", "44367-00", "44367-01", "44367-02", "44376-00"
+  )
+
+codes_pregnancy_complications_icd9 <- c(
+  paste0(630:677,".X")
+)
+codes_pregnancy_complications_icd10 <- c(  # O00.X thru O99.X (1st character is the capital letter ‘O’)
+  paste0("O",str_pad(0:99, width=2, pad="0"),".X")
+)
+
+make_regex_from_codes <- function(codes) {
+  codes %>%
+    str_remove_all(string = ., pattern="\\.X$") %>%  # remove final .X wildcard, not needed for regex matching!
+    str_replace_all(string = ., pattern = "\\.", replacement = "\\\\.") %>%  # replace dot with string literal dot
+    paste0("^", ., collapse = "|")
+}
+```
+
+# Step 1 & 2
+
+```{r}
+diabetes7 <-
+  diabetes6 %>%
+  left_join(diabcomp) %>%
+  mutate(
+    complic = as.integer(!is.na(compdate))
+  )
+
+diabetes7 %>% count(complic)
+stopifnot(sum(diabetes7$complic)==6196)
+```
+
+# Steps 3-6
+
+```{r}
+tic()
+HMDSdata3 <-
+  HMDSdata2 %>%
+  left_join(diabetes7 %>% select(rootlpno, date)) %>%
+  rowwise() %>%
+  mutate(
+    pregnant = any(str_detect(string = c_across(cols = matches("^diag")), pattern = make_regex_from_codes(c(codes_pregnancy_complications_icd9,codes_pregnancy_complications_icd10))), na.rm=TRUE)
+  ) %>%
+  ungroup
+toc()
+
+HMDSdata3 <-
+  HMDSdata3 %>%
+  mutate(pregnant = replace_na(pregnant, replace=0L)) %>%  # replace NAs with 0
+  group_by(rootlpno) %>%
+  mutate(
+    pregseq = if_else(condition = pregnant & admdate >= date, true = cumsum(pregnant & admdate >= date), false = NA_integer_)
+  ) %>%
+  ungroup
+
+HMDSdata3 %>% slice(477:491) %>% select(rootlpno, morbseq, condseq, admdate, date, pregnant, pregseq)
+```
+
+# Step 7
+
+```{r}
+HMDSpreg <-
+  HMDSdata3 %>%
+  rename(pregdate = admdate) %>%
+  filter(pregseq == 1)
+
+stopifnot(nrow(HMDSpreg)==213)
+```
+
+# Step 8
+
+```{r}
+diabetes8 <-
+  diabetes7 %>%
+  left_join(HMDSpreg %>% select(rootlpno, pregdate)) %>%
+  mutate(pregexp = as.integer(!is.na(pregdate)))
+```
+
+# Step 9
+
+```{r}
+diabetes8 %>%
+  count(sex, pregexp)
+
+# 1 = male, 2 = female
+
+rpfdiab <-
+  diabetes8 %>%
+  filter(sex==2) %>%
+  group_by(rootlpno) %>%
+  filter(min(age)<=39) %>%
+  ungroup
+
+## below is the given solution, somewhat different but produces same result
+# rpfdiab <-
+#   diabetes8 %>%
+#   filter(!is.na(sex) & sex=='2' & (age %in% 15:39))
+
+stopifnot(nrow(rpfdiab)==716)
+```
+
+# Step 10
+
+```{r}
+set.seed(2e6)
+rpfdiab %>%
+  filter(pregexp==1) %>%
+  mutate(randsort = runif(nrow(.))) %>%
+  arrange(randsort) %>%
+  mutate(
+    randseq = row_number(),
+    timepreg = as.integer(pregdate - date, units="days")
+    ) %>%
+  slice(1:15) %>%
+  select(compdate:timepreg)
+
+set.seed(2e6)
+rpfexp <-
+  rpfdiab %>%
+  filter(pregexp==1) %>%
+  mutate(randsort = runif(nrow(.))) %>%
+  arrange(randsort) %>%
+  mutate(
+    randseq = 1:n(),
+    timepreg = as.integer(pregdate - date, units="days")
+    ) %>%
+  select(rootlpno, randseq, timepreg)
+```
+
+# Step 11 & 12
+
+```{r}
+set.seed(3e6)
+rpfnon <-
+  rpfdiab %>%
+  filter(pregexp==0) %>%
+  mutate(randsort = runif(n = n(), min = 0, max = 1)) %>%
+  arrange(randsort) %>%
+  mutate(
+    randseq = rep(1:nrow(rpfexp), length.out=nrow(.))
+  ) %>%
+  arrange(randseq) %>%
+  left_join(
+    rpfexp %>% select(randseq, timepreg), by = "randseq"
+  ) %>%
+  select(rootlpno, timepreg) %>%
+  arrange(rootlpno)
+```
+
+# Step 13
+
+```{r}
+rpfdiab %>%
+  left_join(
+    bind_rows(rpfexp %>% select(rootlpno, timepreg), rpfnon), by = "rootlpno"
+  ) %>%
+  group_by(pregexp) %>%
+  summarise(
+    n = n(),
+    mean = mean(timepreg),
+    sd = sd(timepreg),
+    min = min(timepreg),
+    max = max(timepreg)
+  )
+
+rpfdiab %>%
+  left_join(
+    bind_rows(rpfexp %>% select(rootlpno, timepreg), rpfnon), by = "rootlpno"
+  ) %>%
+  mutate(flag = as.integer(timepreg > as.integer(exit-date,units="days"))) %>% 
+  count(flag)
+
+rpfdiab2 <-
+  rpfdiab %>%
+  left_join(
+    bind_rows(rpfexp %>% select(rootlpno, timepreg), rpfnon), by = "rootlpno"
+  ) %>%
+  mutate(flag = as.integer(timepreg > as.integer(exit-date,units="days"))) %>%
+  filter(flag==0) %>%
+  select(-flag)
+```
+
+# Step 14
+
+```{r}
+rpfdiab2 %>%
+  mutate(
+    flag = compdate < (date + timepreg),
+    flag2 = compdate < pregdate  # pregdate is date + timepreg, except for non-exposed women, who don't have a pregdate!
+    ) %>%
+  count(pregexp, flag, flag2)
+  
+rpfdiab3 <-
+  rpfdiab2 %>%
+  mutate(flag = compdate < (date + timepreg)) %>%
+  filter(!flag | is.na(flag)) %>%
+  select(-flag)
+
+nrow(rpfdiab3)
+```
+
+# Step 15
+
+```{r}
+rpfdiab4 <-
+  rpfdiab3 %>%
+  mutate(compsurv = case_when(
+    complic==1 ~ as.integer(compdate - date, units = "days"),
+    complic==0 ~ as.integer(exit - date, units = "days"),
+    TRUE ~ NA_integer_
+    ) - timepreg  # subtract timepreg!
+  )
+
+rpfdiab4 %>% slice(1:16) %>% select(compdate:compsurv)
+```
+
+# Step 16
+
+```{r}
+survival_object <- survfit(Surv(compsurv, complic) ~ pregexp, data = rpfdiab4, conf.int=0.95)
+
+survival_object %>% 
+  ggsurvplot(fit = ., conf.int = FALSE) +
+  labs(x = "Survival time to complications in days from pregnancy admission", y = "Proportion surviving") +
+  NULL
+```
+
+# Step 17
+
+```{r}
+rpfdiab5 <-
+  rpfdiab4 %>%
+  mutate(stagpreg = case_when(
+      # complic == 0 ~ 0L,  # not diabetic at pregnancy
+      timepreg > (stgpt1+stgpt2) ~ 3L,  # stage 3
+      timepreg > stgpt1 & timepreg <= (stgpt1 + stgpt2) ~ 2L,  # stage 2 at pregnancy
+      timepreg <= stgpt1 ~ 1L,  # stage 1
+      TRUE ~ NA_integer_
+      )
+  )
+
+rpfdiab5 %>% count(stagpreg)
+```
+
+# Step 18
+
+```{r}
+m1 <- coxph(Surv(compsurv, complic) ~ pregexp, data = rpfdiab5)
+m2 <- coxph(Surv(compsurv, complic) ~ pregexp + age, data = rpfdiab5)
+m3 <- coxph(Surv(compsurv, complic) ~ pregexp + age + stagpreg, data = rpfdiab5)
+
+summary(m3)
+```
+
+# Step 19
+
+```{r}
+m3_subset_greater270 <- coxph(Surv(compsurv, complic) ~ pregexp + age + stagpreg, data = rpfdiab5 %>% filter(timepreg > 270))
+m3_subset_lessorequal270 <- coxph(Surv(compsurv, complic) ~ pregexp + age + stagpreg, data = rpfdiab5 %>% filter(timepreg <= 270))
+```
