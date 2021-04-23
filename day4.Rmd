@@ -1,0 +1,318 @@
+---
+title: "Day 4"
+author: "Jan Savinc"
+date: "22/04/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tictoc)
+library(survival)
+library(survminer)  # for ggplot plots of survival
+```
+
+# Load data
+
+```{r}
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/HMDSdata3.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/PBSdata3.RData")
+load(file = "../AALHD_2021/R Syntax and Data/R Data/interim tables/diabetes8.RData")
+
+## convert data frames to tibbles for easier looking up while coding
+HMDSdata3 <- as_tibble(HMDSdata3)
+PBSdata3 <- as_tibble(PBSdata3)
+diabetes8 <- as_tibble(diabetes8)
+```
+
+
+# Define inclusion codes
+
+```{r}
+codes_hmds_ugc_complications <- c(
+  "531.X", "532.X", "533.X", "534.X", "535.X", "578.X",
+  "K25.X", "K26.X", "K27.X", "K28.X", "K29.X", "K92.0", "K92.1", "K92.2"
+)
+
+code_atc_indomethacin <- "M01AB01"
+
+codes_pbs_indomethacin <- c(2454,2459,2757,5126,5127,5128)
+
+# datapasta::tribble_paste()
+codes_tbl_indomethacin <-
+  tibble::tribble(
+  ~pbsitem,     ~strength, ~quantity,
+       2454L,  "25mg   Oral",      100L,
+       2459L,  "25mg   Oral",      100L,
+       2757L,  "100mg  Supp",       20L,
+       5126L,  "25mg   Oral",      100L,
+       5127L,  "25mg   Oral",      100L,
+       5128L, "100mg   Supp",       20L
+  ) %>% extract(col = strength,into = c("dose","form"), regex = "(\\d{2,3})mg\\s+(\\w+)", remove = TRUE) %>% mutate(dose = as.numeric(dose))
+
+make_regex_from_codes <- function(codes) {
+  codes %>%
+    str_remove_all(string = ., pattern="\\.X$") %>%  # remove final .X wildcard, not needed for regex matching!
+    str_replace_all(string = ., pattern = "\\.", replacement = "\\\\.") %>%  # replace dot with string literal dot
+    paste0("^", ., collapse = "|")
+}
+
+
+```
+
+# Steps 1-2
+
+```{r}
+HMDSdata3 <-
+  HMDSdata3 %>%
+  mutate(
+    ugc = as.integer(str_detect(string = diag1, pattern = make_regex_from_codes(codes_hmds_ugc_complications)))  # principal diagnosis onlu
+    ) %>%
+  group_by(rootlpno) %>%
+  mutate(ugcseq = if_else(condition = ugc==1, true = cumsum(ugc==1), false = NA_integer_)) %>%
+  ungroup
+
+index <-
+  HMDSdata3 %>%
+  filter(ugcseq==1 & admdate >= ymd("1991-01-31")) %>%
+  select(rootlpno, age, sex, admdate)
+
+stopifnot(nrow(index)==970)
+```
+
+# Step 3
+
+```{r}
+indexposure <-
+  PBSdata3 %>%
+  mutate(indometh = as.integer(pbsitem %in% codes_tbl_indomethacin$pbsitem)) %>%
+  filter(indometh==1)
+
+stopifnot(nrow(indexposure)==5351)  
+```
+
+# Step 4
+
+```{r}
+indexposure2 <-
+  indexposure %>%
+  left_join(index %>% select(rootlpno, admdate), by="rootlpno") %>%
+  filter(!is.na(admdate))  # index cases are ones with complications, and hence an admdate in HMDSdata3 tagged for UGC events
+```
+
+# Step 5
+
+```{r}
+indexposure3 <-
+  indexposure2 %>%
+  mutate(
+    exposure = case_when(
+      as.integer(admdate - dispdate, units = "days") %in% 0:31 ~ 1L,
+      as.integer(admdate - dispdate, units = "days") %in% 365:395 ~ 2L,
+      TRUE ~ 0L
+    )
+  )
+```
+
+# Step 6
+
+```{r}
+indexposure4 <-
+  indexposure3 %>%
+  filter(exposure %in% 1:2) %>%
+  group_by(rootlpno, exposure) %>%
+  slice_max(order_by = dispdate, n = 1) %>%
+  ungroup %>%
+  select(rootlpno, dispdate, exposure)
+```
+
+# Step 7
+
+```{r}
+indcasexp <- indexposure4 %>% filter(exposure==1)
+indconexp <- indexposure4 %>% filter(exposure==2)
+```
+
+# Step 8
+
+```{r}
+index2 <-
+  index %>%
+  left_join(indcasexp %>% rename(casexdat = dispdate, casexp = exposure)) %>%
+  left_join(indconexp %>% rename(conexdat = dispdate, conexp = exposure)) %>%
+  mutate(
+    casexp = replace_na(casexp, replace = 0),
+    conexp = replace_na(conexp, replace = 0) %>% if_else(.==2, 1, .)
+  )
+```
+
+# Step 9
+
+```{r}
+index2 %>%
+  count(casexp, conexp)
+
+odds_step9 <- sum(index2$casexp==1 & index2$conexp==0) / sum(index2$casexp==0 & index2$conexp==1)
+
+# xtabs(.~conexp+casexp, data = index2, )
+```
+
+# Step 10
+
+```{r}
+set.seed(2.5e6)
+indexadm <-
+  index2 %>%
+  mutate(
+    randsort = runif(n = n(), min = 0, max = 1)
+    ) %>%
+  arrange(randsort) %>%
+  mutate(randseq = row_number()) %>%
+  select(randseq, admdate)
+```
+
+# Steps 11-12
+
+```{r}
+set.seed(3.5e6)
+reference <-
+  diabetes8 %>%
+  mutate(
+    randsort = runif(n = n(), min = 0, max = 1)
+    ) %>%
+  arrange(randsort) %>%
+  mutate(randseq = rep(1:nrow(indexadm), length.out = n())) %>%
+  arrange(randseq) %>%
+  left_join(indexadm) %>%
+  filter(exit >= admdate) %>%
+  select(rootlpno, admdate)
+```
+
+# Step 13
+
+```{r}
+refexposure <-
+  PBSdata3 %>%
+  mutate(indometh = as.integer(pbsitem %in% codes_tbl_indomethacin$pbsitem)) %>%
+  filter(indometh==1)
+```
+
+# Step 14
+
+```{r}
+refexposure2 <-
+  refexposure %>%
+  left_join(reference, by ="rootlpno") %>%
+  filter(!is.na(admdate))
+```
+
+# Step 15
+
+```{r}
+refexposure3 <-
+  refexposure2 %>%
+  mutate(
+    exposure = case_when(
+      as.integer(admdate - dispdate, units = "days") %in% 0:31 ~ 1L,
+      as.integer(admdate - dispdate, units = "days") %in% 365:395 ~ 2L,
+      TRUE ~ 0L
+    )
+  ) %>%
+  filter(exposure %in% 1:2)
+
+# refexposure3 %>% count(exposure)
+```
+
+# Step 16
+
+```{r}
+refexposure4 <-
+  refexposure3 %>%
+  group_by(rootlpno, exposure) %>%
+  slice_max(order_by = dispdate, n = 1) %>%
+  ungroup %>%
+  select(rootlpno, dispdate, exposure)
+```
+
+# Step 17
+
+```{r}
+refcasexp <- refexposure4 %>% filter(exposure==1)
+refconexp <- refexposure4 %>% filter(exposure==2)
+```
+
+# Step 18
+
+```{r}
+reference2 <-
+  reference %>%  # reference are ids randomly picked from the diabetes file, independent of whether they had UGC
+  left_join(refcasexp %>% rename(casexdat = dispdate, casexp = exposure)) %>%
+  left_join(refconexp %>% rename(conexdat = dispdate, conexp = exposure)) %>%
+  mutate(
+    casexp = replace_na(casexp, replace = 0),
+    conexp = replace_na(conexp, replace = 0) %>% if_else(.==2, 1, .)
+  )
+```
+
+# Step 19
+
+```{r}
+reference2 %>% count(casexp, conexp)
+
+odds_step19 <- sum(reference2$casexp==1 & reference2$conexp==0) / sum(reference2$casexp==0 & reference2$conexp==1)
+## is this equivalent to running a
+# glm(formula = casexp~conexp, family = "binomial", data = reference2)
+
+
+
+odds_ratio <- odds_step9 / odds_step19
+```
+
+> This is your estimate of the effect of first-time UGC within 31 days of the dispensing date of an indomethacin script compared with at other times, over and above any apparent effect introduced by time-trend bias.
+
+# Overlap between index cases and reference cases?
+
+```{r}
+# index2 contains index cases
+# reference2 contains reference cases
+
+nrow(index2 %>% inner_join(reference2, by="rootlpno"))
+```
+
+# data.table messing around
+
+```{r}
+library(data.table)
+
+diabetes9 <- as.data.table(diabetes8)
+
+diabetes9[dead==1 & totpt>500]
+diabetes9[,list(dead)]
+diabetes9[,dead]
+diabetes9[,list(dead,totpt)]
+diabetes9[,.(dead,totpt)]  # .() is an alias for list()
+diabetes9[,.(d = dead, tpt = totpt)]
+
+diabetes9[, sum((stgpt1+stgpt2)<stgpt3)]
+diabetes9[dead==1, sum((stgpt1+stgpt2)<stgpt3)]
+diabetes9[dead==0, sum((stgpt1+stgpt2)<stgpt3)]
+
+diabetes9[dead==0, .(stg1and2 = sum(stgpt1+stgpt2))]
+diabetes9[dead==0, .(stg1and2 = sum(stgpt1+stgpt2), deads=sum(dead==0), n = .N)]
+diabetes9[dead==0, c("stg1and2" = sum(stgpt1+stgpt2), "deads"=sum(dead==0), "n" = .N)]
+some_magic_names <- c("stage2","stage3")
+
+diabetes9[dead==0, .(stg1and2 = sum(stgpt1+stgpt2), deads=sum(dead==0), n = .N, ..some_magic_names)]
+
+
+```
+

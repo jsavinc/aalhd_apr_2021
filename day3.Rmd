@@ -328,4 +328,8 @@ summary(m3)
 ```{r}
 m3_subset_greater270 <- coxph(Surv(compsurv, complic) ~ pregexp + age + stagpreg, data = rpfdiab5 %>% filter(timepreg > 270))
 m3_subset_lessorequal270 <- coxph(Surv(compsurv, complic) ~ pregexp + age + stagpreg, data = rpfdiab5 %>% filter(timepreg <= 270))
+
+cox.zph(m1)
+cox.zph(m2)
+cox.zph(m3)
 ```
